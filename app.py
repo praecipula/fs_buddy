@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from lib.models.file import FileLikeObject, session
+from src.models.file import FileLikeObject, session
 import datetime
 
 
