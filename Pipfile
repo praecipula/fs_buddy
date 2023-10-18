@@ -7,6 +7,12 @@ verify_ssl = true
 
 [packages]
 sqlalchemy = "*"
+slack-me = {editable = true, git = "https://github.com/praecipula/slack_me"}
+greenlet = "*"
+python-magic = "*"
+imohash = "*"
+python-logging-base = {git = "https://github.com/praecipula/python_logging_base"}
+pillow = "*"
 
 [requires]
 python_version = "3.7"
