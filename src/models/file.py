@@ -90,7 +90,7 @@ class FileLikeObject(Base):
             self.fingerprint_type = "imohash_default_hex"
             self.fingerprint = imohash.hashfile(self.path, hexdigest=True)
             LOG.trace(f"* Fingerprint ({self.fingerprint_type}): {self.fingerprint}")
-            if self.mime.startswith("image"):
+            if self.mime == "image/jpeg":
                 meta = ImageMetadata(file = self)
                 meta.populate_from_file()
                 self.image_meta = meta
@@ -190,7 +190,11 @@ class ImageMetadata(Base):
             LOG.info(f"{self.file.path} has no EXIF data")
             return
         for (k, v) in exif.items():
-            tagname = ExifTags.TAGS[k]
+            try:
+              tagname = ExifTags.TAGS[k]
+            except KeyError as e:
+                LOG.error(f"Could not find EXIF tag with number {k}, skipping")
+                continue
             # Direct / easy set with little type manipulation
             if tagname in ["Make", "Model", "Software", "Orientation", "XResolution", "YResolution", \
                     "ShutterSpeedValue", "ApertureValue", "BrightnessValue", "ExposureBiasValue"]:
@@ -201,26 +205,42 @@ class ImageMetadata(Base):
                 # with values that require massaging (the GPS values do, for example).
                 # Also these are just datetimes so we can generalize that for now too.
                 propname = ImageMetadata.name_conversion_regex.sub("_", tagname).lower()
-                setattr(self, propname, datetime.datetime.strptime(v, "%Y:%m:%d %H:%M:%S"))
+                try:
+                    setattr(self, propname, datetime.datetime.strptime(v, "%Y:%m:%d %H:%M:%S"))
+                except ValueError as e:
+                    LOG.error(f"Could not parse time value of {v}; skipping")
+                    continue
             LOG.trace(f"{tagname} => {v}")
             if tagname == "GPSInfo": # Unpack the GPS subtags
                 for (l, w) in v.items():
                     subtagname = ExifTags.GPSTAGS[l]
                     LOG.trace(f"  {subtagname} => {w}")
                 # Assume the standard set of tags are always here if any gps tags are.
-                lat_t = v[ExifTags.GPS.GPSLatitude]
-                lat_h = v[ExifTags.GPS.GPSLatitudeRef]
-                self.gps_latitude_dms = f"{int(lat_t[0])}°{int(lat_t[1])}'{lat_t[2]}\"{lat_h}"
-                lon_t = v[ExifTags.GPS.GPSLongitude]
-                lon_h = v[ExifTags.GPS.GPSLongitudeRef]
-                self.gps_longitude_dms = f"{int(lon_t[0])}°{int(lon_t[1])}'{lon_t[2]}\"{lon_h}"
-                self.gps_altitude = v[ExifTags.GPS.GPSAltitude] # All the references I see are from \00 - sea level
+                try:
+                    lat_t = v[ExifTags.GPS.GPSLatitude]
+                    lat_h = v[ExifTags.GPS.GPSLatitudeRef]
+                    self.gps_latitude_dms = f"{int(lat_t[0])}°{int(lat_t[1])}'{lat_t[2]}\"{lat_h}"
+                except KeyError as e:
+                    LOG.warning("GPS data present, but could not get latitude")
+                try:
+                    lon_t = v[ExifTags.GPS.GPSLongitude]
+                    lon_h = v[ExifTags.GPS.GPSLongitudeRef]
+                    self.gps_longitude_dms = f"{int(lon_t[0])}°{int(lon_t[1])}'{lon_t[2]}\"{lon_h}"
+                except KeyError as e:
+                    LOG.warning("GPS data present, but could not get longitude")
+                try:
+                    self.gps_altitude = v[ExifTags.GPS.GPSAltitude] # All the references I see are from \00 - sea level
+                except KeyError as e:
+                    LOG.warning("GPS data present, but could not get altitude")
                 if ExifTags.GPS.GPSImgDirection in v:
                     self.gps_direction = v[ExifTags.GPS.GPSImgDirection]
-                date_string = v[ExifTags.GPS.GPSDateStamp]
-                time_t = v[ExifTags.GPS.GPSTimeStamp]
-                stringified = f"{date_string} {int(time_t[0])}:{int(time_t[1])}:{int(time_t[2])}"
-                gps_datetime = datetime.datetime.strptime(stringified, "%Y:%m:%d %H:%M:%S")
+                try:
+                    date_string = v[ExifTags.GPS.GPSDateStamp]
+                    time_t = v[ExifTags.GPS.GPSTimeStamp]
+                    stringified = f"{date_string} {int(time_t[0])}:{int(time_t[1])}:{int(time_t[2])}"
+                    gps_datetime = datetime.datetime.strptime(stringified, "%Y:%m:%d %H:%M:%S")
+                except KeyError as e:
+                    LOG.warning("GPS data present, but could not get datetime")
         return self
 
 
