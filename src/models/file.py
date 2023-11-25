@@ -13,6 +13,8 @@ from sqlalchemy import Column, ForeignKey, Integer, BigInteger, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, backref, sessionmaker
 from sqlalchemy import create_engine
+from sqlalchemy.sql import text
+import sqlalchemy
 
 Base = declarative_base()
 
@@ -24,6 +26,8 @@ LOG = logging.getLogger("flo")
 LOG.level = logging.DEBUG
 
 PILLog = logging.getLogger("PIL.TiffImagePlugin")
+PILLog.level = logging.INFO
+PILLog = logging.getLogger("PIL.PngImagePlugin")
 PILLog.level = logging.INFO
 
 flo_scan_cache = {}
@@ -90,10 +94,21 @@ class FileLikeObject(Base):
             self.fingerprint_type = "imohash_default_hex"
             self.fingerprint = imohash.hashfile(self.path, hexdigest=True)
             LOG.trace(f"* Fingerprint ({self.fingerprint_type}): {self.fingerprint}")
-            if self.mime == "image/jpeg":
-                meta = ImageMetadata(file = self)
-                meta.populate_from_file()
-                self.image_meta = meta
+            if self.mime.startswith("image") and \
+                    not self.mime == "image/x-xcf":     # GIMP files don't have the same metadata
+                try:
+                    meta = ImageMetadata(file = self)
+                    meta.populate_from_file()
+                    self.image_meta = meta
+                except Exception as e:
+                    import traceback;
+                    LOG.error(traceback.format_exc())
+                    LOG.error("Setting fingerprint as \"error\"")
+                    #import pdb; pdb.set_trace()
+                    # Set the fingerprint to represent a broken file.
+                    # The "fingerprint" will be the exception message.
+                    self.fingerprint = str(e)
+                    self.fingerprint_type = "error"
 
 
     @staticmethod
@@ -185,15 +200,22 @@ class ImageMetadata(Base):
 
     def populate_from_file(self):
         img = Image.open(self.file.path)
-        exif = img._getexif()
+        exif = None
+        try:
+            exif = img._getexif()       # This is a private method; it may or may not be defined
+        except AttributeError as e:
+            LOG.debug(f"{self.file.path} has no private _getexif method; trying public")
+            exif = img.getexif()        # This is the more approved method
+        
         if exif == None:
-            LOG.info(f"{self.file.path} has no EXIF data")
+            LOG.debug(f"{self.file.path} has no EXIF data")
             return
+
         for (k, v) in exif.items():
             try:
               tagname = ExifTags.TAGS[k]
             except KeyError as e:
-                LOG.error(f"Could not find EXIF tag with number {k}, skipping")
+                LOG.error(f"Could not get exif tag name for value {k}")
                 continue
             # Direct / easy set with little type manipulation
             if tagname in ["Make", "Model", "Software", "Orientation", "XResolution", "YResolution", \
@@ -246,12 +268,6 @@ class ImageMetadata(Base):
 
 
 class DuplicateView(Base):
-    """
-    Defined in sqlite as:
-    CREATE VIEW view_duplicates AS SELECT a.id, a.path, a.fingerprint, a.mime, a.tree_size_bytes, a.dev_number, a.creation_or_meta FROM filelikes a JOIN (SELECT path, fingerprint, COUNT(*) FROM filelikes GROUP BY fingerprint HAVING COUNT(*) > 1 ) b ON a.fingerprint = b.fingerprint ORDER BY a.fingerprint DESC
-
-    TODO: find a way to define this in SQLAlchemy?
-    """
     __tablename__ = "view_duplicates"
     __table_args__ = {'info': dict(is_view=True)}
 
@@ -263,6 +279,21 @@ class DuplicateView(Base):
     tree_size_bytes = Column(BigInteger, index=True)            # The size of the whole subtree (for files, size of self)
     dev_number = Column(Integer, index=True)                    # The device number of the file
     creation_or_meta = Column(DateTime, index=True)
+
+    @staticmethod
+    def create_view(connection):
+        # Because we're hijacking the ORM on top of a view, base.metadata.create_all will create a table if it doesn't exist.
+        # But, we want a view and just want to ORM on top of it!
+        # So if the name view_duplicates exists as a table, drop it.
+        # If the name view_duplicates does not exist as a view, create it.
+        inspector = sqlalchemy.inspect(connection.engine)
+        if 'view_duplicates' in inspector.get_table_names():
+            statement = text("""DROP TABLE view_duplicates""")
+            connection.execute(statement)
+        if 'view_duplicates' not in inspector.get_view_names():
+            statement = text("""CREATE VIEW view_duplicates AS SELECT a.id, a.path, a.fingerprint, a.mime, a.tree_size_bytes, a.dev_number, a.creation_or_meta FROM filelikes a JOIN (SELECT path, fingerprint, COUNT(*) FROM filelikes GROUP BY fingerprint HAVING COUNT(*) > 1 ) b ON a.fingerprint = b.fingerprint ORDER BY a.fingerprint DESC""")
+            connection.execute(statement)
+
 
     @staticmethod
     def scan_for_duplicate_folders():
@@ -303,9 +334,6 @@ class DuplicateView(Base):
         return sorted(list(tuples), key=lambda t: -t[2])
 
 
-
-
-
 session = None
 
 in_memory_session = None
@@ -326,10 +354,13 @@ def bind_file_db():
     sqlite_db_filename = "file_metadata.sqlite"
     file_engine = create_engine(f'sqlite:///{sqlite_db_filename}')
     print(f"Creating filesystem DB at {sqlite_db_filename}")
-    Base.metadata.create_all(file_engine)
 
+    Base.metadata.create_all(file_engine)
     Base.metadata.bind = file_engine
     DBSession = sessionmaker(bind=file_engine)
+
+    with file_engine.connect() as conn:
+        DuplicateView.create_view(conn)
 
     file_session = DBSession()
     return file_session
