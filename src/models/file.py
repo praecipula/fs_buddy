@@ -305,6 +305,7 @@ class DuplicateView(Base):
         def bidirectional_duplicates(value, last_value):
             last_dir = str(pathlib.Path(last_value.path).parent)
             current_dir = str(pathlib.Path(value.path).parent)
+            
             def map_a_b(a, b):
                 if folders.get(a) == None:
                     folders[a] = {}
@@ -328,6 +329,8 @@ class DuplicateView(Base):
                 # Dedupe with alphabetical sort
                 smaller_key = min(key, innerkey)
                 larger_key = max(key, innerkey)
+                if smaller_key == larger_key:
+                    continue
                 tup = (smaller_key, larger_key, count)
                 tuples.add(tup)
         # Return sorted list of (dir, dir, count_overlaps) tuples by number of overlapping files
